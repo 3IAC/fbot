@@ -12,11 +12,11 @@ def analyze_signal(instrument, indicators, recent_trades):
     losses = [t for t in recent_trades if t.get("pnl", 0) and t["pnl"] <= 0]
     perf = f"Recent: {len(wins)} wins, {len(losses)} losses on {instrument}." if recent_trades else ""
 
-    prompt = f"""You are an expert forex/gold scalp trader analyzing {instrument} on 5-minute bars.
+    prompt = f"""You are an expert forex/gold scalp trader analyzing {instrument} on 1-minute bars.
 
 Current market data:
 - Price: {indicators.get('price')}
-- RSI(14): {indicators.get('rsi')} (>70 overbought, <30 oversold)
+- RSI(14): {indicators.get('rsi')} (>70 overbought → sell, <30 oversold → buy)
 - MA9: {indicators.get('ma9')}
 - MA20: {indicators.get('ma20')}
 - MA50: {indicators.get('ma50')}
@@ -27,7 +27,8 @@ Current market data:
 - Above MA20: {indicators.get('above_ma20')}
 {perf}
 
-This is a SCALP strategy: 0.5% stop loss, 1.5% take profit. Only buy on clear momentum setups.
+This is a SCALP strategy: 0.5% stop loss, 1.5% take profit, max 15-minute hold.
+Return "buy" for long entries (oversold, upward momentum), "sell" for short entries (overbought, downward momentum), "hold" if no clear setup.
 
 Respond ONLY with valid JSON, no markdown:
 {{

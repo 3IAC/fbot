@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone, timedelta
 import bot.database as db
 import bot.oanda_client as oanda
@@ -18,7 +19,7 @@ _UNITS_MAP = {
 
 
 def run_scan():
-    """Scan all forex/gold instruments on M1 bars and place trades on qualified signals."""
+    """Scan all forex/gold instruments on M1 bars. Executes BUY and SELL signals."""
     print("[FBOT] Starting scan...")
 
     acc_data = oanda.get_account()
@@ -57,43 +58,57 @@ def run_scan():
             signal = analyze_signal(instrument, indicators, inst_trades)
             threshold = db.get_adaptive_threshold(instrument, DEFAULT_CONFIDENCE_THRESHOLD)
 
-            # Always log signal so dashboard signals panel populates
-            db.log_signal(instrument, signal["action"], signal["confidence"],
-                          signal["reasoning"], indicators)
+            action = signal["action"]
+            conf = signal["confidence"]
+            print(f"[FBOT] {instrument}: {action.upper()} ({conf:.0%}) "
+                  f"threshold={threshold:.0%} — {signal['key_signal']}")
 
-            print(f"[FBOT] {instrument}: {signal['action'].upper()} "
-                  f"({signal['confidence']:.0%}) threshold={threshold:.0%} — {signal['key_signal']}")
-
-            if signal["action"] != "buy" or signal["confidence"] < threshold:
+            # Execute both BUY and SELL if above threshold
+            if action not in ("buy", "sell") or conf < threshold:
                 continue
 
             price = indicators["price"]
-            units = _UNITS_MAP.get(instrument, 1000)
-            stop_loss  = round(price * (1 - STOP_LOSS_PCT), 5)
-            take_profit = round(price * (1 + TAKE_PROFIT_PCT), 5)
+            base_units = _UNITS_MAP.get(instrument, 1000)
+
+            if action == "buy":
+                units = base_units
+                stop_loss   = round(price * (1 - STOP_LOSS_PCT), 5)
+                take_profit = round(price * (1 + TAKE_PROFIT_PCT), 5)
+            else:  # sell / short
+                units = -base_units
+                stop_loss   = round(price * (1 + STOP_LOSS_PCT), 5)
+                take_profit = round(price * (1 - TAKE_PROFIT_PCT), 5)
+
+            print(f"[FBOT] Placing {action.upper()} {abs(units)} {instrument} @ {price:.5f} "
+                  f"SL={stop_loss:.5f} TP={take_profit:.5f}")
 
             result = oanda.place_order(instrument, units, stop_loss, take_profit)
+
+            # Always log the full API response so we can debug failures
+            print(f"[FBOT] ORDER RESPONSE: {json.dumps(result)[:500] if result else 'None/Error'}")
+
             if result:
-                trade_id = result.get("orderFillTransaction", {}).get("tradeOpened", {}).get("tradeID")
-                fill_price = float(result.get("orderFillTransaction", {}).get("price", price))
+                tx = result.get("orderFillTransaction", {})
+                trade_id = tx.get("tradeOpened", {}).get("tradeID")
+                fill_price = float(tx.get("price", price))
                 db_id = db.log_trade(
-                    instrument, "buy", units, fill_price, trade_id,
+                    instrument, action, units, fill_price, trade_id,
                     signal["reasoning"], stop_loss, take_profit
                 )
-                print(f"[FBOT] BUY {units} {instrument} @ {fill_price:.5f} "
+                print(f"[FBOT] {action.upper()} PLACED {abs(units)} {instrument} @ {fill_price:.5f} "
                       f"| SL: {stop_loss:.5f} | TP: {take_profit:.5f} | db_id={db_id}")
             else:
-                print(f"[FBOT] {instrument}: order failed")
+                print(f"[FBOT] {instrument}: order FAILED — check errors table")
 
         except Exception as e:
             db.log_error(f"trader.{instrument}", str(e))
+            print(f"[FBOT] EXCEPTION {instrument}: {e}")
 
 
 def check_open_trades():
     """
     Exit monitor: reconcile open DB trades with OANDA.
     Force-close trades older than MAX_TRADE_DURATION_MINUTES.
-    Close settled (TP/SL hit) trades in DB.
     """
     open_db = db.get_open_trades()
     if not open_db:
@@ -108,19 +123,23 @@ def check_open_trades():
         if not oanda_id:
             continue
 
-        # Force-close if trade exceeded max duration
+        # Force-close if exceeded max duration
         opened_at = trade.get("opened_at")
         if opened_at:
             try:
                 opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
                 if (now - opened_dt) > max_age:
-                    print(f"[FBOT] TIMEOUT {trade['instrument']} open {int((now-opened_dt).total_seconds()//60)}min — force closing")
-                    oanda.close_trade(oanda_id)
+                    age_min = int((now - opened_dt).total_seconds() // 60)
+                    print(f"[FBOT] TIMEOUT {trade['instrument']} open {age_min}min — force closing")
+                    close_result = oanda.close_trade(oanda_id)
+                    print(f"[FBOT] CLOSE RESPONSE: {json.dumps(close_result)[:300] if close_result else 'None/Error'}")
                     price = oanda.get_price(trade["instrument"])
                     if price:
                         db.close_trade(trade["id"], price)
-                        pnl_pct = (price - trade["entry_price"]) / trade["entry_price"] * 100
-                        outcome = "WIN" if price > trade["entry_price"] else "LOSS"
+                        entry = trade["entry_price"]
+                        side = trade.get("side", "buy")
+                        pnl_pct = ((price - entry) / entry * 100) * (1 if side == "buy" else -1)
+                        outcome = "WIN" if pnl_pct > 0 else "LOSS"
                         print(f"[FBOT] TIMEOUT {outcome} {trade['instrument']} | {pnl_pct:+.2f}%")
                         _log_learning(trade["instrument"], trade, price, pnl_pct)
                     continue
@@ -132,10 +151,12 @@ def check_open_trades():
             price = oanda.get_price(trade["instrument"])
             if price:
                 db.close_trade(trade["id"], price)
-                pnl_pct = (price - trade["entry_price"]) / trade["entry_price"] * 100
-                outcome = "WIN" if price > trade["entry_price"] else "LOSS"
+                entry = trade["entry_price"]
+                side = trade.get("side", "buy")
+                pnl_pct = ((price - entry) / entry * 100) * (1 if side == "buy" else -1)
+                outcome = "WIN" if pnl_pct > 0 else "LOSS"
                 print(f"[FBOT] {outcome} {trade['instrument']} | "
-                      f"entry={trade['entry_price']:.5f} exit={price:.5f} | {pnl_pct:+.2f}%")
+                      f"entry={entry:.5f} exit={price:.5f} | {pnl_pct:+.2f}%")
                 _log_learning(trade["instrument"], trade, price, pnl_pct)
 
 
