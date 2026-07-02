@@ -69,3 +69,7 @@ def api_signals():
 @app.route("/api/brain")
 def api_brain():
     return jsonify(db.get_latest_brain() or {})
+
+@app.route("/api/performance")
+def api_performance():
+    return jsonify(db.get_performance())
