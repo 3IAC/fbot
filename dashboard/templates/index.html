@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FBOT — Forex & Gold Bot</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0e1a;color:#e2e8f0;font-family:'Courier New',monospace;font-size:14px}
+header{background:#111827;border-bottom:1px solid #1e3a5f;padding:16px 24px;display:flex;align-items:center;gap:16px}
+header h1{font-size:20px;color:#38bdf8;letter-spacing:2px}
+.badge{background:#064e3b;color:#34d399;padding:4px 10px;border-radius:4px;font-size:11px;font-weight:bold}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:20px}
+.card{background:#111827;border:1px solid #1e3a5f;border-radius:8px;padding:16px}
+.card .label{color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.card .value{font-size:24px;font-weight:bold;color:#38bdf8}
+.card .sub{color:#6b7280;font-size:11px;margin-top:4px}
+section{padding:0 20px 20px}
+section h2{color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:#4b5563;font-size:11px;padding:8px 12px;border-bottom:1px solid #1e3a5f}
+td{padding:8px 12px;border-bottom:1px solid #111827;font-size:13px}
+tr:hover td{background:#111827}
+.buy{color:#34d399}.sell{color:#f87171}.hold{color:#fbbf24}
+.win{color:#34d399}.loss{color:#f87171}
+.pnl-pos{color:#34d399}.pnl-neg{color:#f87171}
+#refresh{color:#374151;font-size:10px;padding:0 24px 8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ FBOT</h1>
+  <span class="badge">PRACTICE MODE</span>
+  <span style="color:#4b5563;font-size:12px;margin-left:auto" id="ts">—</span>
+</header>
+
+<div class="grid" id="cards">
+  <div class="card"><div class="label">Balance</div><div class="value" id="balance">—</div></div>
+  <div class="card"><div class="label">Unrealized P&L</div><div class="value" id="upnl">—</div></div>
+  <div class="card"><div class="label">Open Trades</div><div class="value" id="open">—</div></div>
+  <div class="card"><div class="label">Total Closed</div><div class="value" id="total">—</div></div>
+  <div class="card"><div class="label">Win Rate</div><div class="value" id="winrate">—</div></div>
+  <div class="card"><div class="label">Total P&L</div><div class="value" id="totalpnl">—</div></div>
+</div>
+
+<section>
+  <h2>Open Positions (OANDA)</h2>
+  <table>
+    <thead><tr><th>Instrument</th><th>Units</th><th>Open Price</th><th>Current P&L</th><th>State</th></tr></thead>
+    <tbody id="pos-body"><tr><td colspan="5" style="color:#4b5563">Loading...</td></tr></tbody>
+  </table>
+</section>
+
+<section style="margin-top:16px">
+  <h2>Recent Trades</h2>
+  <table>
+    <thead><tr><th>Instrument</th><th>Side</th><th>Units</th><th>Entry</th><th>Exit</th><th>P&L%</th><th>Status</th><th>Opened</th></tr></thead>
+    <tbody id="trade-body"><tr><td colspan="8" style="color:#4b5563">Loading...</td></tr></tbody>
+  </table>
+</section>
+
+<section style="margin-top:16px">
+  <h2>AI Signals</h2>
+  <table>
+    <thead><tr><th>Instrument</th><th>Action</th><th>Confidence</th><th>Key Signal</th><th>Reasoning</th><th>Time</th></tr></thead>
+    <tbody id="sig-body"><tr><td colspan="6" style="color:#4b5563">Loading...</td></tr></tbody>
+  </table>
+</section>
+
+<div id="refresh">Auto-refreshing every 20s</div>
+
+<script>
+const fmt = v => v == null ? '—' : Number(v).toFixed(2);
+const fmtP = v => v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
+const fmtPrice = (v,d=5) => v == null ? '—' : Number(v).toFixed(d);
+const ts = () => new Date().toLocaleTimeString();
+
+async function refresh() {
+  document.getElementById('ts').textContent = 'Updated ' + ts();
+  try {
+    const [acc, stats, trades, sigs, pos] = await Promise.all([
+      fetch('/api/account').then(r=>r.json()),
+      fetch('/api/stats').then(r=>r.json()),
+      fetch('/api/trades').then(r=>r.json()),
+      fetch('/api/signals').then(r=>r.json()),
+      fetch('/api/positions').then(r=>r.json()),
+    ]);
+    document.getElementById('balance').textContent = '$' + fmt(acc.balance);
+    const upnl = acc.unrealized_pnl || 0;
+    document.getElementById('upnl').textContent = (upnl>=0?'+':'') + '$' + fmt(upnl);
+    document.getElementById('upnl').className = 'value ' + (upnl>=0?'pnl-pos':'pnl-neg');
+    document.getElementById('open').textContent = acc.open_trade_count ?? '0';
+    document.getElementById('total').textContent = stats.total ?? '0';
+    document.getElementById('winrate').textContent = (stats.win_rate ?? 0) + '%';
+    const tp = stats.total_pnl || 0;
+    document.getElementById('totalpnl').textContent = (tp>=0?'+':'') + '$' + fmt(tp);
+    document.getElementById('totalpnl').className = 'value ' + (tp>=0?'pnl-pos':'pnl-neg');
+
+    // Positions
+    const pb = document.getElementById('pos-body');
+    if (!pos || pos.length === 0) {
+      pb.innerHTML = '<tr><td colspan="5" style="color:#4b5563">No open positions</td></tr>';
+    } else {
+      pb.innerHTML = pos.map(p => `<tr>
+        <td>${p.instrument}</td>
+        <td>${p.currentUnits}</td>
+        <td>${fmtPrice(p.price)}</td>
+        <td class="${parseFloat(p.unrealizedPL||0)>=0?'pnl-pos':'pnl-neg'}">${(parseFloat(p.unrealizedPL||0)>=0?'+':'')}$${fmt(p.unrealizedPL)}</td>
+        <td style="color:#6b7280">${p.state}</td>
+      </tr>`).join('');
+    }
+
+    // Trades
+    const tb = document.getElementById('trade-body');
+    tb.innerHTML = trades.slice(0,20).map(t => {
+      const pp = t.pnl_pct;
+      const pClass = pp == null ? '' : pp >= 0 ? 'pnl-pos' : 'pnl-neg';
+      return `<tr>
+        <td>${t.instrument}</td>
+        <td class="${t.side==='buy'?'buy':'sell'}">${t.side.toUpperCase()}</td>
+        <td>${t.units}</td>
+        <td>${fmtPrice(t.entry_price)}</td>
+        <td>${fmtPrice(t.exit_price)}</td>
+        <td class="${pClass}">${fmtP(pp)}</td>
+        <td class="${t.status==='open'?'hold':t.pnl>0?'win':'loss'}">${t.status.toUpperCase()}</td>
+        <td style="color:#4b5563">${(t.opened_at||'').slice(0,16)}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:#4b5563">No trades yet</td></tr>';
+
+    // Signals
+    const sb = document.getElementById('sig-body');
+    sb.innerHTML = sigs.slice(0,10).map(s => `<tr>
+      <td>${s.instrument}</td>
+      <td class="${s.action}">${s.action.toUpperCase()}</td>
+      <td>${Math.round((s.confidence||0)*100)}%</td>
+      <td style="color:#94a3b8">${s.reasoning?.split('.')[0]||'—'}</td>
+      <td style="color:#6b7280;font-size:11px">${(s.reasoning||'').slice(0,80)}</td>
+      <td style="color:#4b5563">${(s.created_at||'').slice(11,16)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="color:#4b5563">No signals yet</td></tr>';
+
+  } catch(e) { console.error(e); }
+}
+
+refresh();
+setInterval(refresh, 20000);
+</script>
+</body>
+</html>
