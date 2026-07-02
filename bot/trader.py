@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 import bot.database as db
 import bot.oanda_client as oanda
 from bot.brain import analyze_signal, learn_from_trades
@@ -5,7 +6,8 @@ from bot.indicators import get_all_indicators
 from bot.config import (
     INSTRUMENTS, STOP_LOSS_PCT, TAKE_PROFIT_PCT,
     MAX_OPEN_TRADES, DEFAULT_CONFIDENCE_THRESHOLD,
-    UNITS_EUR_USD, UNITS_GBP_USD, UNITS_XAU_USD
+    UNITS_EUR_USD, UNITS_GBP_USD, UNITS_XAU_USD,
+    MAX_TRADE_DURATION_MINUTES
 )
 
 _UNITS_MAP = {
@@ -16,7 +18,7 @@ _UNITS_MAP = {
 
 
 def run_scan():
-    """Scan all forex/gold instruments and place trades on qualified signals."""
+    """Scan all forex/gold instruments on M1 bars and place trades on qualified signals."""
     print("[FBOT] Starting scan...")
 
     acc_data = oanda.get_account()
@@ -42,7 +44,7 @@ def run_scan():
             continue
 
         try:
-            candles = oanda.get_candles(instrument, granularity="M5", count=100)
+            candles = oanda.get_candles(instrument, granularity="M1", count=100)
             if not candles or len(candles) < 20:
                 print(f"[FBOT] {instrument}: insufficient candle data")
                 continue
@@ -54,6 +56,10 @@ def run_scan():
             inst_trades = [t for t in recent_db_trades if t["instrument"] == instrument]
             signal = analyze_signal(instrument, indicators, inst_trades)
             threshold = db.get_adaptive_threshold(instrument, DEFAULT_CONFIDENCE_THRESHOLD)
+
+            # Always log signal so dashboard signals panel populates
+            db.log_signal(instrument, signal["action"], signal["confidence"],
+                          signal["reasoning"], indicators)
 
             print(f"[FBOT] {instrument}: {signal['action'].upper()} "
                   f"({signal['confidence']:.0%}) threshold={threshold:.0%} — {signal['key_signal']}")
@@ -84,17 +90,43 @@ def run_scan():
 
 
 def check_open_trades():
-    """Exit monitor: reconcile open DB trades with OANDA and close settled ones."""
+    """
+    Exit monitor: reconcile open DB trades with OANDA.
+    Force-close trades older than MAX_TRADE_DURATION_MINUTES.
+    Close settled (TP/SL hit) trades in DB.
+    """
     open_db = db.get_open_trades()
     if not open_db:
         return
 
     oanda_open = {t["id"]: t for t in oanda.get_open_trades()}
+    now = datetime.now(timezone.utc)
+    max_age = timedelta(minutes=MAX_TRADE_DURATION_MINUTES)
 
     for trade in open_db:
         oanda_id = trade.get("oanda_trade_id")
         if not oanda_id:
             continue
+
+        # Force-close if trade exceeded max duration
+        opened_at = trade.get("opened_at")
+        if opened_at:
+            try:
+                opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                if (now - opened_dt) > max_age:
+                    print(f"[FBOT] TIMEOUT {trade['instrument']} open {int((now-opened_dt).total_seconds()//60)}min — force closing")
+                    oanda.close_trade(oanda_id)
+                    price = oanda.get_price(trade["instrument"])
+                    if price:
+                        db.close_trade(trade["id"], price)
+                        pnl_pct = (price - trade["entry_price"]) / trade["entry_price"] * 100
+                        outcome = "WIN" if price > trade["entry_price"] else "LOSS"
+                        print(f"[FBOT] TIMEOUT {outcome} {trade['instrument']} | {pnl_pct:+.2f}%")
+                        _log_learning(trade["instrument"], trade, price, pnl_pct)
+                    continue
+            except Exception as e:
+                db.log_error("check_open.timeout", str(e))
+
         if oanda_id not in oanda_open:
             # Trade closed by TP or SL
             price = oanda.get_price(trade["instrument"])
@@ -113,9 +145,11 @@ def _log_learning(instrument, trade, exit_price, pnl_pct):
         return
     wins = sum(1 for t in closed if t.get("pnl", 0) and t["pnl"] > 0)
     win_rate = wins / len(closed) if closed else 0
-    new_threshold = db.get_adaptive_threshold(instrument)
+    new_threshold = db.get_adaptive_threshold(instrument, DEFAULT_CONFIDENCE_THRESHOLD)
+    outcome = "WIN" if pnl_pct > 0 else "LOSS"
     detail = (f"win_rate={win_rate:.1%} over {len(closed)} trades | "
               f"pnl={pnl_pct:+.2f}% | threshold now={new_threshold:.2f}")
+    db.log_learning_event(instrument, outcome, detail)
     print(f"[LEARN] {instrument}: {detail}")
 
 

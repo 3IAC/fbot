@@ -188,3 +188,11 @@ def get_recent_signals(limit=20):
         return [dict(r) for r in conn.execute(
             "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()]
+
+
+def log_learning_event(instrument, event_type, detail):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO brain_log (summary, patterns, adjustments, win_rate, created_at) VALUES (?, ?, ?, ?, ?)",
+            (f"[LEARN:{event_type}] {instrument}", detail, "", 0.0, _now())
+        )

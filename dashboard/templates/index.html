@@ -251,8 +251,8 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 20px
         <button class="inst-tab" data-inst="XAU_USD" onclick="switchInst('XAU_USD')">XAU/USD</button>
       </div>
       <div class="tf-group">
-        <button class="tf-btn" data-tf="M1" onclick="switchTF('M1')">1M</button>
-        <button class="tf-btn active" data-tf="M5" onclick="switchTF('M5')">5M</button>
+        <button class="tf-btn active" data-tf="M1" onclick="switchTF('M1')">1M</button>
+        <button class="tf-btn" data-tf="M5" onclick="switchTF('M5')">5M</button>
         <button class="tf-btn" data-tf="M15" onclick="switchTF('M15')">15M</button>
         <button class="tf-btn" data-tf="H1" onclick="switchTF('H1')">1H</button>
         <button class="tf-btn" data-tf="H4" onclick="switchTF('H4')">4H</button>
@@ -329,7 +329,7 @@ const G = id => document.getElementById(id);
 let chart = null, candleSeries = null, volSeries = null;
 let activeLines = { entry: null, sl: null, tp: null };
 let activeInst = 'EUR_USD';
-let activeTF = 'M5';
+let activeTF = 'M1';
 let allPositions = [];
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -617,7 +617,8 @@ function renderTrades(trades) {
     const icoCls = isOpen ? 'ico-open' : win ? 'ico-win' : 'ico-loss';
     const ico = isOpen ? '◈' : win ? '▲' : '▼';
     const p = (t.instrument||'').includes('XAU') ? 2 : 5;
-    return `<div class="tlog-item">
+    const ts = t.opened_at ? Math.floor(new Date(t.opened_at).getTime()/1000) : null;
+    return `<div class="tlog-item" style="cursor:pointer" onclick="jumpToTrade('${t.instrument||''}',${ts||0})">
       <div class="tlog-icon ${icoCls}">${ico}</div>
       <div class="tlog-info">
         <div class="tlog-sym">${(t.instrument||'').replace('_','/')} <span style="color:var(--txt3);font-weight:400">${(t.side||'').toUpperCase()}</span></div>
@@ -626,6 +627,19 @@ function renderTrades(trades) {
       <div class="tlog-pnl ${isOpen?'dim':pnl>=0?'up':'down'}">${isOpen?'OPEN':sign$(pnl)}</div>
     </div>`;
   }).join('');
+}
+
+// ── Jump to trade on chart ────────────────────────────────────
+async function jumpToTrade(inst, ts) {
+  if (!inst) return;
+  if (inst !== activeInst) {
+    await switchInst(inst);
+  }
+  if (ts && chart) {
+    // Scroll chart so the trade entry bar is visible with some context
+    const barsBefore = 20;
+    chart.timeScale().setVisibleRange({ from: ts - barsBefore * 60, to: ts + 60 * 60 });
+  }
 }
 
 // ── Main data refresh ─────────────────────────────────────────
