@@ -78,8 +78,16 @@ def get_price(instrument):
         if prices:
             bid = float(prices[0].get("bids", [{}])[0].get("price", 0))
             ask = float(prices[0].get("asks", [{}])[0].get("price", 0))
-            return round((bid + ask) / 2, 5)
+            dp = 2 if instrument in ("XAU_USD", "XAG_USD", "XCU_USD") else 5
+            return round((bid + ask) / 2, dp)
     return None
+
+
+def _fmt_price(instrument, price):
+    """Return price string with correct decimal precision for the instrument."""
+    if instrument in ("XAU_USD", "XAG_USD", "XCU_USD"):
+        return f"{price:.2f}"
+    return f"{price:.5f}"
 
 
 def place_order(instrument, units, stop_loss_price, take_profit_price):
@@ -93,8 +101,8 @@ def place_order(instrument, units, stop_loss_price, take_profit_price):
             "instrument": instrument,
             "units": str(units),
             "timeInForce": "FOK",
-            "stopLossOnFill": {"price": f"{stop_loss_price:.5f}"},
-            "takeProfitOnFill": {"price": f"{take_profit_price:.5f}"},
+            "stopLossOnFill": {"price": _fmt_price(instrument, stop_loss_price)},
+            "takeProfitOnFill": {"price": _fmt_price(instrument, take_profit_price)},
         }
     }
     return _post(f"/v3/accounts/{OANDA_ACCOUNT_ID}/orders", body)
