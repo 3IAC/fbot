@@ -133,15 +133,22 @@ def check_open_trades():
                     print(f"[FBOT] TIMEOUT {trade['instrument']} open {age_min}min — force closing")
                     close_result = oanda.close_trade(oanda_id)
                     print(f"[FBOT] CLOSE RESPONSE: {json.dumps(close_result)[:300] if close_result else 'None/Error'}")
-                    price = oanda.get_price(trade["instrument"])
-                    if price:
-                        db.close_trade(trade["id"], price)
+                    # Use fill price from close response (reliable), fall back to live price
+                    exit_price = None
+                    if close_result:
+                        tx = close_result.get("orderFillTransaction", {})
+                        if tx.get("price"):
+                            exit_price = float(tx["price"])
+                    if not exit_price:
+                        exit_price = oanda.get_price(trade["instrument"])
+                    if exit_price:
+                        db.close_trade(trade["id"], exit_price)
                         entry = trade["entry_price"]
                         side = trade.get("side", "buy")
-                        pnl_pct = ((price - entry) / entry * 100) * (1 if side == "buy" else -1)
+                        pnl_pct = ((exit_price - entry) / entry * 100) * (1 if side == "buy" else -1)
                         outcome = "WIN" if pnl_pct > 0 else "LOSS"
                         print(f"[FBOT] TIMEOUT {outcome} {trade['instrument']} | {pnl_pct:+.2f}%")
-                        _log_learning(trade["instrument"], trade, price, pnl_pct)
+                        _log_learning(trade["instrument"], trade, exit_price, pnl_pct)
                     continue
             except Exception as e:
                 db.log_error("check_open.timeout", str(e))
